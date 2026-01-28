@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa do Acaso</title>
+
+<link rel="manifest" href="manifest.json">
+
+<style>
+body {
+  margin: 0;
+  font-family: system-ui, sans-serif;
+  background: #0d0d0d;
+  color: #eee;
+}
+.app {
+  padding: 14px;
+  max-width: 480px;
+  margin: auto;
+}
+h1 { text-align:center; }
+
+select, button {
+  width: 100%;
+  padding: 14px;
+  border-radius: 14px;
+  margin-top: 6px;
+  font-size: 1em;
+}
+
+button { background:#d6b45c; border:none; }
+
+#mapViewport {
+  width:100%;
+  height:60vh;
+  overflow:auto;
+  border-radius:16px;
+  background:#111;
+  margin-top:10px;
+}
+
+#map {
+  display:grid;
+  gap:4px;
+  transform-origin: top left;
+}
+
+.cell {
+  aspect-ratio:1;
+  background:#222;
+  border-radius:6px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:1.1em;
+}
+
+.controls {
+  display:grid;
+  grid-template-columns: repeat(3,1fr);
+  gap:6px;
+  margin-top:8px;
+}
+
+.log {
+  background:#1a1a1a;
+  border-radius:12px;
+  padding:10px;
+  margin-top:10px;
+  font-size:.85em;
+}
+</style>
+</head>
+
+<body>
+<div class="app">
+<h1>🗺️ Mapa do Acaso</h1>
+
+<select onchange="setMapSize(this.value)">
+  <option value="6">Mapa 6×6</option>
+  <option value="12">Mapa 12×12</option>
+</select>
+
+<select onchange="setGameMode(this.value)">
+  <option value="creator">Modo Criador</option>
+  <option value="exploration">Modo Exploração</option>
+</select>
+
+<button onclick="rollAll()">Girar / Criar</button>
+
+<div id="mapViewport">
+  <div id="map"></div>
+</div>
+
+<div class="controls">
+  <div></div><button onclick="move(0,-1)">⬆️</button><div></div>
+  <button onclick="move(-1,0)">⬅️</button>
+  <button onclick="move(0,1)">⬇️</button>
+  <button onclick="move(1,0)">➡️</button>
+</div>
+
+<div style="display:flex;gap:6px;margin-top:6px;">
+  <button onclick="zoomMap(0.8)">➖</button>
+  <button onclick="zoomMap(1.25)">➕</button>
+</div>
+
+<button onclick="exportMap()">Exportar PNG</button>
+
+<div class="log" id="log"></div>
+</div>
+
+<script>
+/* =======================
+   REGISTRO DO SERVICE WORKER
+======================= */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js');
+}
+
+/* =======================
+   ESTADO GLOBAL
+======================= */
+let MAP_SIZE = parseInt(localStorage.getItem("mapSize")) || 6;
+let GAME_MODE = localStorage.getItem("gameMode") || "creator";
+let zoom = 1;
+
+let savedMap = JSON.parse(localStorage.getItem("mapData")) || {};
+let diary = JSON.parse(localStorage.getItem("diary")) || [];
+
+let explorer = JSON.parse(localStorage.getItem("explorer")) || {
+  x: Math.ceil(MAP_SIZE / 2),
+  y: Math.ceil(MAP_SIZE / 2)
+};
+
+/* =======================
+   TABELAS FIXAS (STRINGS!)
+======================= */
+const icons = {
+ "A":"✴️",
+ "2":"🛤️",
+ "3":"⛰️",
+ "4":"🌊",
+ "5":"🏞️",
+ "6":"🌲",
+ "7":"🏜️",
+ "8":"🏖️",
+ "9":"🟦",
+ "10":"🟩",
+ "J":"🐊",
+ "Q":"🌀",
+ "K":"🏝️"
+};
+
+const mapEl = document.getElementById("map");
+const log = document.getElementById("log");
+
+/* =======================
+   CONTROLES
+======================= */
+function setMapSize(v) {
+  localStorage.clear();
+  localStorage.setItem("mapSize", v);
+  location.reload();
+}
+
+function setGameMode(v) {
+  localStorage.setItem("gameMode", v);
+  location.reload();
+}
+
+function roll() {
+  return Math.floor(Math.random() * MAP_SIZE) + 1;
+}
+
+function zoomMap(f) {
+  zoom *= f;
+  zoom = Math.min(Math.max(zoom, 0.6), 3);
+  mapEl.style.transform = `scale(${zoom})`;
+}
+
+/* =======================
+   CLIMA (USA value STRING)
+======================= */
+function climate(p) {
+  if (p.value === "7") return "🔥";     // deserto
+  if (p.value === "9") return "🌧️";     // lago/mar
+  if (p.y / MAP_SIZE < 0.25) return "❄️";
+  if (p.y / MAP_SIZE > 0.75) return "☀️";
+  if (p.value === "6") return "🌧️";     // floresta
+  return "🌤️";
+}
+
+/* =======================
+   RENDERIZAÇÃO DO MAPA
+======================= */
+function renderMap() {
+  mapEl.innerHTML = "";
+  mapEl.style.gridTemplateColumns = `repeat(${MAP_SIZE},1fr)`;
+
+  for (let y = 1; y <= MAP_SIZE; y++) {
+    for (let x = 1; x <= MAP_SIZE; x++) {
+      const c = document.createElement("div");
+      c.className = "cell";
+      const key = `${x}-${y}`;
+
+      if (GAME_MODE === "exploration") {
+        const dx = Math.abs(x - explorer.x);
+        const dy = Math.abs(y - explorer.y);
+        if (dx > 1 || dy > 1) {
+          c.textContent = "⬛";
+          mapEl.appendChild(c);
+          continue;
+        }
+      }
+
+      if (savedMap[key]) {
+        c.textContent = savedMap[key].icon + climate(savedMap[key]);
+      }
+
+      if (GAME_MODE === "exploration" && x === explorer.x && y === explorer.y) {
+        c.textContent = "🙂";
+      }
+
+      mapEl.appendChild(c);
+    }
+  }
+
+  log.innerHTML = diary.slice(-5).join("<hr>");
+}
+
+/* =======================
+   API DE CARTAS (CORRIGIDA)
+======================= */
+async function drawCard() {
+  try {
+    const res = await fetch("https://deckofcardsapi.com/api/deck/new/draw/?count=1");
+    const data = await res.json();
+    const card = data.cards[0];
+
+    return {
+      value: String(card.value), // "10"
+      suit: card.suit,
+      code: card.code,           // "0S"
+      image: card.image
+    };
+  } catch {
+    const values = ["A","2","3","4","5","6","7","8","9","10","J","Q","K"];
+    return {
+      value: values[Math.floor(Math.random() * values.length)],
+      suit: "SPADES",
+      code: null,
+      image: null
+    };
+  }
+}
+
+/* =======================
+   CRIAÇÃO / DESCOBERTA
+======================= */
+async function rollAll() {
+  const x = roll();
+  const y = roll();
+  const card = await drawCard();
+
+  const value = String(card.value);
+  const icon = icons[value];
+  const key = `${x}-${y}`;
+
+  if (!icon) return; // blindagem
+
+  savedMap[key] = { x, y, value, icon };
+  diary.push(`(${new Date().toLocaleString()}) Descoberto ${icon} em ${x},${y}`);
+
+  localStorage.setItem("mapData", JSON.stringify(savedMap));
+  localStorage.setItem("diary", JSON.stringify(diary));
+
+  renderMap();
+}
+
+/* =======================
+   MOVIMENTO (EXPLORAÇÃO)
+======================= */
+function move(dx, dy) {
+  if (GAME_MODE !== "exploration") return;
+
+  const nx = explorer.x + dx;
+  const ny = explorer.y + dy;
+  if (nx < 1 || ny < 1 || nx > MAP_SIZE || ny > MAP_SIZE) return;
+
+  explorer.x = nx;
+  explorer.y = ny;
+  localStorage.setItem("explorer", JSON.stringify(explorer));
+
+  if (!savedMap[`${nx}-${ny}`]) rollAll();
+  renderMap();
+}
+
+/* =======================
+   EXPORTAÇÃO PNG
+======================= */
+function exportMap() {
+  const size = MAP_SIZE === 12 ? 40 : 60;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size * MAP_SIZE;
+  const ctx = canvas.getContext("2d");
+
+  ctx.fillStyle = "#111";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.font = "28px serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  Object.values(savedMap).forEach(p => {
+    ctx.fillText(p.icon, (p.x - 0.5) * size, (p.y - 0.5) * size);
+  });
+
+  const a = document.createElement("a");
+  a.download = "mapa.png";
+  a.href = canvas.toDataURL();
+  a.click();
+}
+
+renderMap();
+</script>
+</body>
+</html>
